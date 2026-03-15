@@ -17,7 +17,7 @@
     "update",
     "cli"
   ],
-  "author": "SENODROOM",
+  "author": "Muhammad Saad Amin",
   "license": "MIT",
   "engines": {
     "node": ">=14.0.0"
