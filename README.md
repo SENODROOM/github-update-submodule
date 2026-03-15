@@ -6,20 +6,22 @@
 
 ## The Problem
 
-Git submodules work by storing a **commit pointer** (a hash) in the parent repo. When a submodule gets new commits, the parent repo's pointer goes stale — GitHub still shows the old commit until someone manually updates and pushes it. With deeply nested submodules this becomes a nightmare to manage by hand.
+Git submodules store a **commit pointer** (a hash) in the parent repo. When a submodule gets new commits, the parent's pointer goes stale — GitHub still shows the old commit until someone manually updates and pushes it. With deeply nested submodules this becomes a nightmare to manage by hand.
 
 ```
-GitHub (parent repo)  ──pins──▶  old commit ❌
+GitHub (parent repo)  ──pins──▶  old commit  ❌
 Your local submodule             latest commit ✅
 ```
 
 ## The Solution
 
-One command. Run it in any repo with submodules and every parent on GitHub will point to the latest commit — automatically, recursively, all the way down the tree.
+One command from any repo with submodules:
 
 ```bash
 github-update-submodule
 ```
+
+Everything is handled automatically — pull, commit, push — all the way down the tree and back up again.
 
 ---
 
@@ -33,54 +35,76 @@ npm install -g github-update-submodule
 
 ## Usage
 
-Navigate to your root repo in the terminal and run:
-
 ```bash
+# Run from your root repo — pulls + commits + pushes everything
 github-update-submodule
+
+# Preview what would change without touching anything
+github-update-submodule --dry-run
+
+# Confirm each repo before pushing
+github-update-submodule --interactive
+
+# Fetch all submodules at the same time (much faster on large trees)
+github-update-submodule --parallel
+
+# Skip specific submodules
+github-update-submodule --ignore frontend --ignore legacy-lib
+
+# Local update only, no push
+github-update-submodule --no-push
 ```
 
-That's it. The tool will:
+---
 
-1. **Pull** — fetch every submodule (at any nesting depth) and reset it to the latest commit on its remote branch
-2. **Commit** — stage and commit the updated submodule pointers in each parent repo
-3. **Push** — push from the innermost repos outward to the root, so GitHub is fully up to date at every level
-
-### Options
+## Options
 
 | Flag | Description |
 |---|---|
-| `--no-push` | Pull locally only, do not commit or push |
-| `--dry-run` | Preview what would change without touching anything |
+| `--no-push` | Pull locally only, skip commit and push |
+| `--interactive` | Show a diff and ask yes/no before pushing each repo |
+| `--ignore <name>` | Skip a submodule by name. Repeatable: `--ignore a --ignore b` |
+| `--parallel` | Fetch all submodules concurrently (huge speedup on large trees) |
+| `--dry-run` | Preview all changes — nothing is modified |
 | `--message <m>` | Custom commit message (default: `chore: update submodule refs`) |
 | `--branch <b>` | Default branch if not declared in `.gitmodules` (default: `main`) |
 | `--depth <n>` | Limit recursion depth |
 | `--verbose` | Show full git output for every operation |
 | `--no-color` | Disable colored output |
+| `--no-progress` | Disable the progress bar |
 
-### Examples
+---
 
-```bash
-# Standard usage — pull + commit + push everything
-github-update-submodule
+## Config File
 
-# Preview changes without modifying anything
-github-update-submodule --dry-run
+Place a `.submodulerc` or `submodule.config.json` file in your repo root to set persistent defaults. CLI flags always override the config file.
 
-# Pull locally only, skip the push
-github-update-submodule --no-push
-
-# Custom commit message
-github-update-submodule --message "ci: bump all submodule refs to latest"
-
-# Run on a specific repo path
-github-update-submodule /path/to/your/repo
-
-# Use master as the default branch
-github-update-submodule --branch master
-
-# Limit to 2 levels of nesting
-github-update-submodule --depth 2
+**`.submodulerc`** (JSON):
+```json
+{
+  "defaultBranch": "main",
+  "parallel": true,
+  "ignore": ["legacy-lib", "vendor"],
+  "commitMessage": "ci: bump submodule refs",
+  "interactive": false,
+  "verbose": false
+}
 ```
+
+All config keys match the CLI flag names (camelCase, without `--`):
+
+| Key | Type | Default |
+|---|---|---|
+| `push` | boolean | `true` |
+| `interactive` | boolean | `false` |
+| `ignore` | string or string[] | `[]` |
+| `parallel` | boolean | `false` |
+| `commitMessage` | string | `"chore: update submodule refs"` |
+| `defaultBranch` | string | `"main"` |
+| `maxDepth` | number | unlimited |
+| `verbose` | boolean | `false` |
+| `color` | boolean | `true` |
+| `progress` | boolean | `true` |
 
 ---
 
@@ -88,24 +112,41 @@ github-update-submodule --depth 2
 
 ### Phase 1 — Pull
 
-For each submodule (recursively):
+For each submodule (recursively, depth-first):
 
 1. Initialises any submodule that hasn't been cloned yet
-2. Runs `git fetch --prune origin`
-3. Resolves the correct branch (from `.gitmodules`, then remote HEAD, then `--branch` flag)
+2. Fetches from `origin` (in parallel if `--parallel` is set)
+3. Resolves the correct branch: `.gitmodules` declaration → remote HEAD → `--branch` flag
 4. Runs `git checkout -B <branch> origin/<branch>` to hard-move to the remote tip
-5. Stages the updated pointer in the parent repo with `git add <path>`
-6. Recurses into the submodule's own submodules
+5. Stages the updated pointer in the parent with `git add <path>`
+6. Prints a clickable **GitHub compare URL** for every submodule that changed:
+   ```
+   ⎘ https://github.com/org/repo/compare/abc12345...def67890
+   ```
+7. Recurses into the submodule's own submodules
 
 ### Phase 2 — Commit & Push
 
-Walks the repo tree **innermost → outermost**:
+Walks the tree **innermost → outermost**:
 
-1. For each repo that has staged changes, commits with the configured message
-2. Pushes to `origin/<branch>`
-3. Moves up to the parent and repeats
+1. For each repo with staged changes, optionally shows a `--interactive` diff prompt
+2. Commits with the configured message
+3. Pushes to `origin/<branch>`
+4. Moves up to the parent and repeats
 
-The innermost-first order ensures that by the time GitHub receives a pointer update from a parent repo, the commit it points to already exists on the remote.
+The innermost-first order guarantees that by the time GitHub receives a pointer update from a parent, the commit it points to already exists on the remote.
+
+---
+
+## Progress Bar
+
+In sequential mode (default) a live progress bar tracks the fetch phase:
+
+```
+[████████████░░░░░░░░░░░░░░░░]  43% (6/13)  frontend
+```
+
+In `--parallel` mode the bar advances as each concurrent fetch completes.
 
 ---
 
@@ -113,27 +154,33 @@ The innermost-first order ensures that by the time GitHub receives a pointer upd
 
 ```
 ╔══════════════════════════════════════════╗
-║   github-update-submodule                ║
+║   github-update-submodule  v2.0.0        ║
 ╚══════════════════════════════════════════╝
 
 › Repository     : /projects/my-app
 › Default branch : main
 › Push mode      : ON
+› Interactive    : OFF
+› Parallel fetch : ON
+› Ignoring       : legacy-lib
 
 Phase 1 — Pull all submodules to latest remote commit
 
+Parallel fetching 12 submodules…
+[████████████████████████████]  100% (12/12)
+
 ▸ QuantumDocsSyncer  (docs/QuantumDocsSyncer)
-  › Fetching from origin…
   › Branch: main
   ✔ Updated  d11a9fce → 4a82bc91
+  ⎘ https://github.com/org/QuantumDocsSyncer/compare/d11a9fce...4a82bc91
   ▸ frontend  (frontend)
-    › Fetching from origin…
     › Branch: main
     ✔ Updated  fe03e5be → 9c14d7aa
+    ⎘ https://github.com/org/frontend/compare/fe03e5be...9c14d7aa
   ▸ backend  (backend)
-    › Fetching from origin…
     › Branch: main
     ✔ Already up to date (b6732bc5)
+⊘ legacy-lib  (ignored)
 
 Phase 2 — Commit & push updated refs (innermost → root)
 
@@ -148,18 +195,34 @@ Summary
   · Up to date : 1
   ↑ Committed  : 2
   ↑ Pushed     : 2
+  ⊘ Ignored    : 1
   ⚠ Skipped    : 0
   ✘ Failed     : 0
-    Total      : 3  (18.42s)
+    Total      : 4  (8.31s)
 ```
+
+---
+
+## Interactive Mode
+
+With `--interactive`, the tool pauses before pushing each parent repo and shows a staged diff summary:
+
+```
+ docs/QuantumDocsSyncer | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+  Push 'my-app' → origin/main? [y/N]
+```
+
+Type `y` to push or anything else to skip that repo.
 
 ---
 
 ## Requirements
 
 - **Node.js** >= 14
-- **Git** installed and available in your PATH
-- Your git remotes must be authenticated (SSH keys or credential manager) so pushes can succeed without a password prompt
+- **Git** installed and in your PATH
+- Remote authentication set up (SSH keys or credential manager) so pushes don't require a password prompt
 
 ---
 

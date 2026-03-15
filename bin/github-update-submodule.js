@@ -1,69 +1,121 @@
 #!/usr/bin/env node
 
 /**
- * github-update-submodule
+ * github-update-submodule v2.0.0
+ *
  * Recursively pulls all Git submodules to their latest remote commit,
- * then commits and pushes the updated refs up every parent repo —
- * so GitHub always points to the latest commit in every submodule.
+ * then commits and pushes the updated refs up every parent repo.
+ *
+ * New in v2: --interactive, --ignore, --parallel, progress bar,
+ *            GitHub compare links, .submodulerc / submodule.config.json
  *
  * Usage:
  *   github-update-submodule [repo-path] [options]
  *
  * Options:
- *   --no-push         Skip committing and pushing (local update only)
- *   --message  <m>    Commit message  (default: "chore: update submodule refs")
- *   --dry-run         Show what would happen without making any changes
- *   --branch   <b>    Default branch when none is declared in .gitmodules (default: main)
- *   --depth    <n>    Max recursion depth (default: unlimited)
- *   --verbose         Show full git output
- *   --no-color        Disable colored output
- *
- * Examples:
- *   github-update-submodule
- *   github-update-submodule --dry-run
- *   github-update-submodule --no-push
- *   github-update-submodule --message "ci: bump submodules"
- *   github-update-submodule /path/to/repo --branch master
+ *   --no-push            Skip committing and pushing (local update only)
+ *   --interactive        Prompt before pushing each parent repo
+ *   --ignore <n>         Submodule name to skip (repeatable)
+ *   --parallel           Fetch all submodules concurrently
+ *   --message  <m>       Commit message (default: "chore: update submodule refs")
+ *   --dry-run            Preview changes without modifying anything
+ *   --branch   <b>       Default branch when not in .gitmodules (default: main)
+ *   --depth    <n>       Max recursion depth (default: unlimited)
+ *   --verbose            Show full git output
+ *   --no-color           Disable colored output
+ *   --no-progress        Disable the progress bar
  */
 
-const { spawnSync } = require("child_process");
-const path = require("path");
-const fs = require("fs");
+const { spawnSync, spawn } = require("child_process");
+const path    = require("path");
+const fs      = require("fs");
+const readline = require("readline");
+
+// ─── Config file loader ───────────────────────────────────────────────────────
+// Reads .submodulerc or submodule.config.json from cwd.
+// CLI flags always override config values.
+
+function loadConfig(repoPath) {
+  const candidates = [
+    path.join(repoPath, ".submodulerc"),
+    path.join(repoPath, "submodule.config.json"),
+  ];
+  for (const f of candidates) {
+    if (fs.existsSync(f)) {
+      try {
+        const raw = fs.readFileSync(f, "utf8").trim();
+        const cfg = JSON.parse(raw);
+        return cfg;
+      } catch (e) {
+        console.warn(`⚠ Could not parse config file ${f}: ${e.message}`);
+      }
+    }
+  }
+  return {};
+}
 
 // ─── CLI argument parsing ────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
+const cliArgs = process.argv.slice(2);
 
+// Defaults (lowest priority)
 const options = {
   repoPath:      process.cwd(),
-  push:          true,                          // ON by default
+  push:          true,
+  interactive:   false,
+  ignore:        [],          // array of submodule names to skip
+  parallel:      false,
   commitMessage: "chore: update submodule refs",
   dryRun:        false,
   defaultBranch: "main",
   maxDepth:      Infinity,
   verbose:       false,
   color:         true,
+  progress:      true,
 };
 
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if      (arg === "--no-push")   options.push          = false;
-  else if (arg === "--dry-run")   options.dryRun        = true;
-  else if (arg === "--verbose")   options.verbose       = true;
-  else if (arg === "--no-color")  options.color         = false;
-  else if (arg === "--branch")    options.defaultBranch = args[++i];
-  else if (arg === "--message")   options.commitMessage = args[++i];
-  else if (arg === "--depth")     options.maxDepth      = parseInt(args[++i], 10);
-  else if (!arg.startsWith("--")) options.repoPath      = path.resolve(arg);
+// Collect positional repo path first so config is loaded from correct dir
+for (let i = 0; i < cliArgs.length; i++) {
+  if (!cliArgs[i].startsWith("--")) options.repoPath = path.resolve(cliArgs[i]);
+}
+
+// Merge config file (overrides defaults, CLI will override config)
+const cfg = loadConfig(options.repoPath);
+if (cfg.push          !== undefined) options.push          = cfg.push;
+if (cfg.interactive   !== undefined) options.interactive   = cfg.interactive;
+if (cfg.ignore        !== undefined) options.ignore        = [].concat(cfg.ignore);
+if (cfg.parallel      !== undefined) options.parallel      = cfg.parallel;
+if (cfg.commitMessage !== undefined) options.commitMessage = cfg.commitMessage;
+if (cfg.defaultBranch !== undefined) options.defaultBranch = cfg.defaultBranch;
+if (cfg.maxDepth      !== undefined) options.maxDepth      = cfg.maxDepth;
+if (cfg.verbose       !== undefined) options.verbose       = cfg.verbose;
+if (cfg.color         !== undefined) options.color         = cfg.color;
+if (cfg.progress      !== undefined) options.progress      = cfg.progress;
+
+// CLI flags (highest priority)
+for (let i = 0; i < cliArgs.length; i++) {
+  const a = cliArgs[i];
+  if      (a === "--no-push")      options.push          = false;
+  else if (a === "--interactive")  options.interactive   = true;
+  else if (a === "--parallel")     options.parallel      = true;
+  else if (a === "--dry-run")      options.dryRun        = true;
+  else if (a === "--verbose")      options.verbose       = true;
+  else if (a === "--no-color")     options.color         = false;
+  else if (a === "--no-progress")  options.progress      = false;
+  else if (a === "--branch")       options.defaultBranch = cliArgs[++i];
+  else if (a === "--message")      options.commitMessage = cliArgs[++i];
+  else if (a === "--depth")        options.maxDepth      = parseInt(cliArgs[++i], 10);
+  else if (a === "--ignore")       options.ignore.push(cliArgs[++i]);
 }
 
 // ─── Colour helpers ──────────────────────────────────────────────────────────
 
 const C = options.color
   ? { reset:"\x1b[0m", bold:"\x1b[1m", dim:"\x1b[2m", green:"\x1b[32m",
-      yellow:"\x1b[33m", cyan:"\x1b[36m", red:"\x1b[31m", magenta:"\x1b[35m", blue:"\x1b[34m" }
+      yellow:"\x1b[33m", cyan:"\x1b[36m", red:"\x1b[31m", magenta:"\x1b[35m",
+      blue:"\x1b[34m",   white:"\x1b[37m" }
   : Object.fromEntries(
-      ["reset","bold","dim","green","yellow","cyan","red","magenta","blue"].map(k => [k, ""])
+      ["reset","bold","dim","green","yellow","cyan","red","magenta","blue","white"].map(k=>[k,""])
     );
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -76,7 +128,73 @@ const warn    = (d, m) => log(d, "⚠", C.yellow,           m);
 const error   = (d, m) => log(d, "✘", C.red,              m);
 const header  = (d, m) => log(d, "▸", C.bold + C.magenta, m);
 const pushLog = (d, m) => log(d, "↑", C.bold + C.green,   m);
+const linkLog = (d, m) => log(d, "⎘", C.bold + C.blue,    m);
 const verbose = (d, m) => { if (options.verbose) log(d, " ", C.dim, m); };
+
+// ─── Progress bar ─────────────────────────────────────────────────────────────
+
+const progress = {
+  total:   0,
+  current: 0,
+  active:  false,
+
+  init(total) {
+    if (!options.progress || !process.stdout.isTTY) return;
+    this.total   = total;
+    this.current = 0;
+    this.active  = true;
+    this._render();
+  },
+
+  tick(label = "") {
+    if (!this.active) return;
+    this.current++;
+    this._render(label);
+    if (this.current >= this.total) this.done();
+  },
+
+  done() {
+    if (!this.active) return;
+    this.active = false;
+    process.stdout.write("\r\x1b[K"); // clear line
+  },
+
+  _render(label = "") {
+    const W       = 28;
+    const filled  = Math.round((this.current / this.total) * W);
+    const empty   = W - filled;
+    const bar     = C.green + "█".repeat(filled) + C.dim + "░".repeat(empty) + C.reset;
+    const pct     = String(Math.round((this.current / this.total) * 100)).padStart(3);
+    const counter = `${this.current}/${this.total}`;
+    const lbl     = label ? `  ${C.dim}${label.slice(0, 24)}${C.reset}` : "";
+    process.stdout.write(`\r${C.bold}[${bar}${C.bold}] ${pct}% (${counter})${lbl}\x1b[K`);
+  },
+};
+
+// ─── GitHub compare URL helper ────────────────────────────────────────────────
+
+function getRemoteUrl(dir) {
+  const r = git(dir, "remote", "get-url", "origin");
+  return r.ok ? r.stdout : null;
+}
+
+function buildCompareUrl(remoteUrl, oldHash, newHash) {
+  if (!remoteUrl) return null;
+
+  let url = remoteUrl.trim();
+
+  // SSH  → HTTPS:  git@github.com:org/repo.git  →  https://github.com/org/repo
+  if (url.startsWith("git@github.com:")) {
+    url = url.replace("git@github.com:", "https://github.com/");
+  }
+  // Strip .git suffix
+  url = url.replace(/\.git$/, "");
+
+  // Only emit links for github.com repos
+  if (!url.includes("github.com")) return null;
+
+  return `${url}/compare/${oldHash.slice(0, 8)}...${newHash.slice(0, 8)}`;
+}
 
 // ─── Git helpers ─────────────────────────────────────────────────────────────
 
@@ -91,6 +209,24 @@ function git(cwd, ...gitArgs) {
     stderr: (r.stderr || "").trim(),
     ok:     r.status === 0,
   };
+}
+
+// Async version used by parallel fetch
+function gitAsync(cwd, ...gitArgs) {
+  return new Promise((resolve) => {
+    let stdout = "", stderr = "";
+    const proc = spawn("git", gitArgs, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    proc.stdout.on("data", d => { stdout += d; });
+    proc.stderr.on("data", d => { stderr += d; });
+    proc.on("close", status => resolve({
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
+      ok: status === 0,
+    }));
+  });
 }
 
 function isGitRepo(dir) {
@@ -126,6 +262,19 @@ function parseGitmodules(repoDir) {
   return submodules.filter(s => s.path);
 }
 
+/** Flatten the full submodule tree for progress bar counting */
+function countAllSubmodules(repoDir, depth = 0) {
+  if (depth > options.maxDepth) return 0;
+  let n = 0;
+  for (const sub of parseGitmodules(repoDir)) {
+    if (options.ignore.includes(sub.name)) continue;
+    n++;
+    const subDir = path.resolve(repoDir, sub.path);
+    if (fs.existsSync(subDir)) n += countAllSubmodules(subDir, depth + 1);
+  }
+  return n;
+}
+
 function resolveBranch(dir, declared) {
   if (declared) return declared;
   const r = git(dir, "remote", "show", "origin");
@@ -140,14 +289,58 @@ function hasStagedChanges(dir) {
   return !git(dir, "diff", "--cached", "--quiet").ok;
 }
 
+// ─── Interactive prompt ───────────────────────────────────────────────────────
+
+function askUser(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => { rl.close(); resolve(answer.trim().toLowerCase()); });
+  });
+}
+
 // ─── Statistics ───────────────────────────────────────────────────────────────
 
 const stats = {
-  updated: 0, upToDate: 0, skipped: 0, failed: 0,
-  committed: 0, pushed: 0, total: 0,
+  updated: 0, upToDate: 0, skipped: 0, ignored: 0,
+  failed: 0, committed: 0, pushed: 0, total: 0,
 };
 
-// ─── Phase 1 — pull every submodule to the remote tip ────────────────────────
+// ─── Phase 1 — parallel fetch pass ───────────────────────────────────────────
+
+/**
+ * Collect every submodule directory in the tree (flat list) so we can
+ * fire all fetches concurrently in --parallel mode.
+ */
+function collectSubmoduleDirs(repoDir, depth = 0, out = []) {
+  if (depth > options.maxDepth) return out;
+  for (const sub of parseGitmodules(repoDir)) {
+    if (options.ignore.includes(sub.name)) continue;
+    const subDir = path.resolve(repoDir, sub.path);
+    if (fs.existsSync(subDir) && isGitRepo(subDir)) {
+      out.push(subDir);
+      collectSubmoduleDirs(subDir, depth + 1, out);
+    }
+  }
+  return out;
+}
+
+async function parallelFetchAll(repoDir) {
+  const dirs = collectSubmoduleDirs(repoDir);
+  if (!dirs.length) return;
+
+  info(0, `Parallel fetching ${C.bold}${dirs.length}${C.reset} submodules…`);
+  progress.init(dirs.length);
+
+  await Promise.all(dirs.map(async (dir) => {
+    await gitAsync(dir, "fetch", "--prune", "origin");
+    progress.tick(path.basename(dir));
+  }));
+
+  progress.done();
+  console.log();
+}
+
+// ─── Phase 1 — sequential update pass ────────────────────────────────────────
 
 function pullSubmodules(repoDir, depth = 0) {
   if (depth > options.maxDepth) { warn(depth, "Max depth reached."); return false; }
@@ -161,9 +354,16 @@ function pullSubmodules(repoDir, depth = 0) {
     const subDir = path.resolve(repoDir, sub.path);
     stats.total++;
 
+    // ── Ignore list ───────────────────────────────────────────────────────
+    if (options.ignore.includes(sub.name)) {
+      log(depth, "⊘", C.dim, `${sub.name}  ${C.dim}(ignored)${C.reset}`);
+      stats.ignored++;
+      continue;
+    }
+
     header(depth, `${sub.name}  ${C.dim}(${sub.path})${C.reset}`);
 
-    // Init if missing
+    // ── Init if missing ───────────────────────────────────────────────────
     if (!fs.existsSync(subDir) || !isGitRepo(subDir)) {
       info(depth + 1, "Not initialised — running git submodule update --init");
       if (!options.dryRun) {
@@ -182,15 +382,19 @@ function pullSubmodules(repoDir, depth = 0) {
       continue;
     }
 
-    // Fetch
-    info(depth + 1, "Fetching from origin…");
-    if (!options.dryRun) {
-      const f = git(subDir, "fetch", "--prune", "origin");
-      if (!f.ok) warn(depth + 1, `Fetch warning: ${f.stderr}`);
-      else verbose(depth + 1, f.stderr || "fetch ok");
+    // ── Fetch (sequential mode; parallel mode already fetched above) ──────
+    if (!options.parallel) {
+      info(depth + 1, "Fetching from origin…");
+      if (!options.dryRun) {
+        const f = git(subDir, "fetch", "--prune", "origin");
+        if (!f.ok) warn(depth + 1, `Fetch warning: ${f.stderr}`);
+        else verbose(depth + 1, f.stderr || "fetch ok");
+      }
+      // Update progress bar in sequential mode
+      progress.tick(sub.name);
     }
 
-    // Resolve branch + remote tip
+    // ── Resolve branch + remote tip ───────────────────────────────────────
     const branch    = resolveBranch(subDir, sub.branch);
     const remoteRef = `origin/${branch}`;
     const remoteTip = git(subDir, "rev-parse", remoteRef).stdout;
@@ -204,8 +408,9 @@ function pullSubmodules(repoDir, depth = 0) {
     }
 
     const beforeHash = git(subDir, "rev-parse", "HEAD").stdout;
+    const remoteUrl  = getRemoteUrl(subDir);
 
-    // Dry-run path
+    // ── Dry-run ───────────────────────────────────────────────────────────
     if (options.dryRun) {
       if (beforeHash === remoteTip) {
         success(depth + 1, `Up to date (${remoteTip.slice(0, 8)})`);
@@ -213,6 +418,8 @@ function pullSubmodules(repoDir, depth = 0) {
       } else {
         success(depth + 1,
           `Would update  ${C.dim}${beforeHash.slice(0, 8)}${C.reset} → ${C.bold}${C.green}${remoteTip.slice(0, 8)}${C.reset}  (dry-run)`);
+        const url = buildCompareUrl(remoteUrl, beforeHash, remoteTip);
+        if (url) linkLog(depth + 1, url);
         stats.updated++;
         anyChanged = true;
       }
@@ -220,7 +427,7 @@ function pullSubmodules(repoDir, depth = 0) {
       continue;
     }
 
-    // Checkout -B <branch> <remoteRef> — moves branch pointer to remote tip
+    // ── Checkout + reset to remote tip ────────────────────────────────────
     const co = git(subDir, "checkout", "-B", branch, remoteRef);
     if (!co.ok) {
       const co2 = git(subDir, "checkout", branch);
@@ -251,11 +458,16 @@ function pullSubmodules(repoDir, depth = 0) {
     } else {
       success(depth + 1,
         `Updated  ${C.dim}${beforeHash.slice(0, 8)}${C.reset} → ${C.bold}${C.green}${afterHash.slice(0, 8)}${C.reset}`);
+
+      // ── GitHub compare link ───────────────────────────────────────────
+      const url = buildCompareUrl(remoteUrl, beforeHash, afterHash);
+      if (url) linkLog(depth + 1, `${C.cyan}${url}${C.reset}`);
+
       stats.updated++;
       anyChanged = true;
     }
 
-    // Recurse — if a nested pointer changed, re-stage this submodule in parent
+    // ── Recurse ───────────────────────────────────────────────────────────
     if (pullSubmodules(subDir, depth + 1)) {
       git(repoDir, "add", sub.path);
       anyChanged = true;
@@ -265,14 +477,15 @@ function pullSubmodules(repoDir, depth = 0) {
   return anyChanged;
 }
 
-// ─── Phase 2 — commit + push updated refs, innermost repos first ─────────────
+// ─── Phase 2 — commit + push, innermost first ────────────────────────────────
 
-function commitAndPush(repoDir, label, depth = 0) {
-  // Children first so innermost repos are pushed before outer ones
+async function commitAndPush(repoDir, label, depth = 0) {
+  // Children first
   for (const sub of parseGitmodules(repoDir)) {
+    if (options.ignore.includes(sub.name)) continue;
     const subDir = path.resolve(repoDir, sub.path);
     if (fs.existsSync(subDir) && isGitRepo(subDir)) {
-      commitAndPush(subDir, sub.name, depth + 1);
+      await commitAndPush(subDir, sub.name, depth + 1);
     }
   }
 
@@ -283,6 +496,24 @@ function commitAndPush(repoDir, label, depth = 0) {
 
   const branch = resolveBranch(repoDir, null);
   info(depth, `${C.bold}${label}${C.reset} — committing on ${C.bold}${branch}${C.reset}…`);
+
+  // ── Interactive prompt ────────────────────────────────────────────────
+  if (options.interactive && !options.dryRun) {
+    // Show what's staged
+    const diff = git(repoDir, "diff", "--cached", "--stat");
+    console.log();
+    console.log(`${C.dim}${diff.stdout}${C.reset}`);
+    console.log();
+    const answer = await askUser(
+      `${C.bold}${C.yellow}  Push '${label}' → origin/${branch}? [y/N] ${C.reset}`
+    );
+    console.log();
+    if (answer !== "y" && answer !== "yes") {
+      warn(depth, `Skipped '${label}' (user declined)`);
+      stats.skipped++;
+      return;
+    }
+  }
 
   if (options.dryRun) {
     warn(depth, `Would commit + push '${label}' → origin/${branch}  (dry-run)`);
@@ -317,10 +548,10 @@ function commitAndPush(repoDir, label, depth = 0) {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   console.log();
   console.log(`${C.bold}${C.blue}╔══════════════════════════════════════════╗${C.reset}`);
-  console.log(`${C.bold}${C.blue}║   github-update-submodule                ║${C.reset}`);
+  console.log(`${C.bold}${C.blue}║   github-update-submodule  v2.0.0        ║${C.reset}`);
   console.log(`${C.bold}${C.blue}╚══════════════════════════════════════════╝${C.reset}`);
   console.log();
 
@@ -329,26 +560,44 @@ function main() {
     process.exit(1);
   }
 
+  // Print active config
   info(0, `Repository     : ${C.bold}${options.repoPath}${C.reset}`);
   info(0, `Default branch : ${C.bold}${options.defaultBranch}${C.reset}`);
-  info(0, `Push mode      : ${options.push ? C.bold + C.green + "ON" : C.dim + "OFF"}${C.reset}`);
-  if (options.dryRun)                warn(0, "DRY RUN — no changes will be made");
-  if (options.maxDepth !== Infinity) info(0, `Max depth      : ${options.maxDepth}`);
+  info(0, `Push mode      : ${options.push        ? C.bold+C.green+"ON"      : C.dim+"OFF"}${C.reset}`);
+  info(0, `Interactive    : ${options.interactive ? C.bold+C.yellow+"ON"     : C.dim+"OFF"}${C.reset}`);
+  info(0, `Parallel fetch : ${options.parallel    ? C.bold+C.cyan+"ON"      : C.dim+"OFF"}${C.reset}`);
+  if (options.ignore.length)
+    info(0, `Ignoring       : ${C.bold}${C.yellow}${options.ignore.join(", ")}${C.reset}`);
+  if (options.dryRun)
+    warn(0, "DRY RUN — no changes will be made");
+  if (options.maxDepth !== Infinity)
+    info(0, `Max depth      : ${options.maxDepth}`);
   console.log();
 
   const t0 = Date.now();
 
-  // Phase 1 — pull
+  // ── Phase 1 ───────────────────────────────────────────────────────────────
   console.log(`${C.bold}${C.cyan}Phase 1 — Pull all submodules to latest remote commit${C.reset}`);
   console.log();
-  pullSubmodules(options.repoPath, 0);
 
-  // Phase 2 — commit + push
+  if (options.parallel && !options.dryRun) {
+    // Fire all fetches at once, then do the sequential update pass
+    await parallelFetchAll(options.repoPath);
+  } else if (!options.parallel) {
+    // Sequential mode: init progress bar based on tree size
+    const total = countAllSubmodules(options.repoPath);
+    progress.init(total);
+  }
+
+  pullSubmodules(options.repoPath, 0);
+  progress.done(); // ensure bar is cleared if sequential
+
+  // ── Phase 2 ───────────────────────────────────────────────────────────────
   if (options.push) {
     console.log();
     console.log(`${C.bold}${C.cyan}Phase 2 — Commit & push updated refs (innermost → root)${C.reset}`);
     console.log();
-    commitAndPush(options.repoPath, path.basename(options.repoPath), 0);
+    await commitAndPush(options.repoPath, path.basename(options.repoPath), 0);
   } else {
     console.log();
     warn(0, `Refs staged locally but NOT pushed (--no-push mode).`);
@@ -365,6 +614,7 @@ function main() {
     console.log(`  ${C.green}↑ Committed  : ${stats.committed}${C.reset}`);
     console.log(`  ${C.green}↑ Pushed     : ${stats.pushed}${C.reset}`);
   }
+  console.log(`  ${C.yellow}⊘ Ignored    : ${stats.ignored}${C.reset}`);
   console.log(`  ${C.yellow}⚠ Skipped    : ${stats.skipped}${C.reset}`);
   console.log(`  ${C.red}✘ Failed     : ${stats.failed}${C.reset}`);
   console.log(`  ${C.dim}  Total      : ${stats.total}  (${elapsed}s)${C.reset}`);
@@ -373,4 +623,7 @@ function main() {
   if (stats.failed > 0) process.exit(1);
 }
 
-main();
+main().catch(err => {
+  console.error(`\n${C.red}Fatal error: ${err.message}${C.reset}`);
+  process.exit(1);
+});

@@ -1,0 +1,10 @@
+{
+  "defaultBranch": "main",
+  "parallel": false,
+  "ignore": [],
+  "commitMessage": "chore: update submodule refs",
+  "interactive": false,
+  "verbose": false,
+  "color": true,
+  "progress": true
+}
