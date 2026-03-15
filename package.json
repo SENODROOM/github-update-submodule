@@ -1,6 +1,6 @@
 {
   "name": "github-update-submodule",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Recursively pull all Git submodules to their latest remote commit and push updated refs up every parent repo — so GitHub always points to the latest.",
   "main": "bin/github-update-submodule.js",
   "bin": {
