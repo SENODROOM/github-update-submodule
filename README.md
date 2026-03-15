@@ -72,22 +72,31 @@ github-update-submodule --no-push
 | `--verbose` | Show full git output for every operation |
 | `--no-color` | Disable colored output |
 | `--no-progress` | Disable the progress bar |
+| `--make-config` | Generate a `submodule.config.json` in the current repo with all defaults, then exit |
 
 ---
 
 ## Config File
 
-Place a `.submodulerc` or `submodule.config.json` file in your repo root to set persistent defaults. CLI flags always override the config file.
+Run `--make-config` once inside your repo to generate a pre-filled `submodule.config.json` with all available keys and their defaults:
 
-**`.submodulerc`** (JSON):
+```bash
+github-update-submodule --make-config
+```
+
+This creates `submodule.config.json` in the current directory and prints a description of every key. Edit the values to set your preferred defaults — CLI flags always override the config file.
+
+Example generated file:
 ```json
 {
   "defaultBranch": "main",
-  "parallel": true,
-  "ignore": ["legacy-lib", "vendor"],
-  "commitMessage": "ci: bump submodule refs",
+  "parallel": false,
+  "ignore": [],
+  "commitMessage": "chore: update submodule refs",
   "interactive": false,
-  "verbose": false
+  "verbose": false,
+  "color": true,
+  "progress": true
 }
 ```
 

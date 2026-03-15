@@ -24,6 +24,7 @@
  *   --verbose            Show full git output
  *   --no-color           Disable colored output
  *   --no-progress        Disable the progress bar
+ *   --make-config        Generate a submodule.config.json in the current repo and exit
  */
 
 const { spawnSync, spawn } = require("child_process");
@@ -102,6 +103,7 @@ for (let i = 0; i < cliArgs.length; i++) {
   else if (a === "--verbose")      options.verbose       = true;
   else if (a === "--no-color")     options.color         = false;
   else if (a === "--no-progress")  options.progress      = false;
+  else if (a === "--make-config")  options.makeConfig    = true;
   else if (a === "--branch")       options.defaultBranch = cliArgs[++i];
   else if (a === "--message")      options.commitMessage = cliArgs[++i];
   else if (a === "--depth")        options.maxDepth      = parseInt(cliArgs[++i], 10);
@@ -546,9 +548,71 @@ async function commitAndPush(repoDir, label, depth = 0) {
   stats.pushed++;
 }
 
+// ─── Config generator ────────────────────────────────────────────────────────
+
+async function runMakeConfig() {
+  const dest = path.join(options.repoPath, "submodule.config.json");
+  const exists = fs.existsSync(dest);
+
+  const template = {
+    defaultBranch:  "main",
+    parallel:       false,
+    ignore:         [],
+    commitMessage:  "chore: update submodule refs",
+    interactive:    false,
+    verbose:        false,
+    color:          true,
+    progress:       true
+  };
+
+  console.log();
+  console.log(`${C.bold}${C.blue}╔══════════════════════════════════════════╗${C.reset}`);
+  console.log(`${C.bold}${C.blue}║   github-update-submodule  v2.0.0        ║${C.reset}`);
+  console.log(`${C.bold}${C.blue}╚══════════════════════════════════════════╝${C.reset}`);
+  console.log();
+
+  if (exists) {
+    console.log(`${C.bold}${C.yellow}⚠ Config file already exists:${C.reset} ${dest}`);
+    console.log();
+    const answer = await askUser(`  ${C.bold}${C.yellow}Overwrite it with defaults? [y/N] ${C.reset}`);
+    console.log();
+    if (answer !== "y" && answer !== "yes") {
+      console.log(`${C.dim}  Cancelled — existing config file left unchanged.${C.reset}`);
+      console.log();
+      process.exit(0);
+    }
+  }
+
+  fs.writeFileSync(dest, JSON.stringify(template, null, 2) + "\n", "utf8");
+
+  const action = exists ? "overwritten" : "created";
+  console.log(`${C.green}${C.bold}✔ Config file ${action}:${C.reset} ${dest}`);
+  console.log();
+  console.log(`  ${C.dim}Edit the values to set your preferred defaults.`);
+  console.log(`  CLI flags always override the config file.${C.reset}`);
+  console.log();
+  console.log(`  ${C.bold}Available keys:${C.reset}`);
+  console.log(`  ${C.cyan}defaultBranch${C.reset}   branch to use when not set in .gitmodules  ${C.dim}(default: "main")${C.reset}`);
+  console.log(`  ${C.cyan}parallel${C.reset}        fetch all submodules concurrently           ${C.dim}(default: false)${C.reset}`);
+  console.log(`  ${C.cyan}ignore${C.reset}          array of submodule names to skip            ${C.dim}(default: [])${C.reset}`);
+  console.log(`  ${C.cyan}commitMessage${C.reset}   commit message for pointer updates           ${C.dim}(default: "chore: update submodule refs")${C.reset}`);
+  console.log(`  ${C.cyan}interactive${C.reset}     prompt before pushing each repo             ${C.dim}(default: false)${C.reset}`);
+  console.log(`  ${C.cyan}verbose${C.reset}         show full git output                        ${C.dim}(default: false)${C.reset}`);
+  console.log(`  ${C.cyan}color${C.reset}           colored terminal output                     ${C.dim}(default: true)${C.reset}`);
+  console.log(`  ${C.cyan}progress${C.reset}        show progress bar                           ${C.dim}(default: true)${C.reset}`);
+  console.log();
+  process.exit(0);
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 async function main() {
+  // --make-config: generate a config file and exit immediately
+  if (options.makeConfig) {
+    await runMakeConfig();
+    return;
+  }
+
   console.log();
   console.log(`${C.bold}${C.blue}╔══════════════════════════════════════════╗${C.reset}`);
   console.log(`${C.bold}${C.blue}║   github-update-submodule  v2.0.0        ║${C.reset}`);
