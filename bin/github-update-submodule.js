@@ -1,27 +1,29 @@
 #!/usr/bin/env node
 
 /**
- * update-submodules.js
- * Recursively updates all Git submodules to the latest remote commit,
- * then (with --push) commits and pushes the updated refs up every parent repo.
+ * github-update-submodule
+ * Recursively pulls all Git submodules to their latest remote commit,
+ * then commits and pushes the updated refs up every parent repo —
+ * so GitHub always points to the latest commit in every submodule.
  *
  * Usage:
- *   node update-submodules.js [repo-path] [options]
+ *   github-update-submodule [repo-path] [options]
  *
  * Options:
- *   --push        Commit and push updated submodule refs in every parent repo
- *   --message <m> Commit message for pointer updates (default: "chore: update submodule refs")
- *   --dry-run     Show what would happen without making any changes
- *   --branch <b>  Default branch when none is declared in .gitmodules (default: main)
- *   --depth <n>   Max recursion depth (default: unlimited)
- *   --verbose     Show full git output
- *   --no-color    Disable colored output
+ *   --no-push         Skip committing and pushing (local update only)
+ *   --message  <m>    Commit message  (default: "chore: update submodule refs")
+ *   --dry-run         Show what would happen without making any changes
+ *   --branch   <b>    Default branch when none is declared in .gitmodules (default: main)
+ *   --depth    <n>    Max recursion depth (default: unlimited)
+ *   --verbose         Show full git output
+ *   --no-color        Disable colored output
  *
  * Examples:
- *   node update-submodules.js --push
- *   node update-submodules.js --push --message "ci: bump submodules"
- *   node update-submodules.js --dry-run
- *   node update-submodules.js /path/to/repo --push --branch master
+ *   github-update-submodule
+ *   github-update-submodule --dry-run
+ *   github-update-submodule --no-push
+ *   github-update-submodule --message "ci: bump submodules"
+ *   github-update-submodule /path/to/repo --branch master
  */
 
 const { spawnSync } = require("child_process");
@@ -33,70 +35,48 @@ const fs = require("fs");
 const args = process.argv.slice(2);
 
 const options = {
-  repoPath: process.cwd(),
-  push: false,
+  repoPath:      process.cwd(),
+  push:          true,                          // ON by default
   commitMessage: "chore: update submodule refs",
-  dryRun: false,
+  dryRun:        false,
   defaultBranch: "main",
-  maxDepth: Infinity,
-  verbose: false,
-  color: true,
+  maxDepth:      Infinity,
+  verbose:       false,
+  color:         true,
 };
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
-  if (arg === "--push") options.push = true;
-  else if (arg === "--dry-run") options.dryRun = true;
-  else if (arg === "--verbose") options.verbose = true;
-  else if (arg === "--no-color") options.color = false;
-  else if (arg === "--branch") options.defaultBranch = args[++i];
-  else if (arg === "--message") options.commitMessage = args[++i];
-  else if (arg === "--depth") options.maxDepth = parseInt(args[++i], 10);
-  else if (!arg.startsWith("--")) options.repoPath = path.resolve(arg);
+  if      (arg === "--no-push")   options.push          = false;
+  else if (arg === "--dry-run")   options.dryRun        = true;
+  else if (arg === "--verbose")   options.verbose       = true;
+  else if (arg === "--no-color")  options.color         = false;
+  else if (arg === "--branch")    options.defaultBranch = args[++i];
+  else if (arg === "--message")   options.commitMessage = args[++i];
+  else if (arg === "--depth")     options.maxDepth      = parseInt(args[++i], 10);
+  else if (!arg.startsWith("--")) options.repoPath      = path.resolve(arg);
 }
 
 // ─── Colour helpers ──────────────────────────────────────────────────────────
 
 const C = options.color
-  ? {
-      reset: "\x1b[0m",
-      bold: "\x1b[1m",
-      dim: "\x1b[2m",
-      green: "\x1b[32m",
-      yellow: "\x1b[33m",
-      cyan: "\x1b[36m",
-      red: "\x1b[31m",
-      magenta: "\x1b[35m",
-      blue: "\x1b[34m",
-    }
+  ? { reset:"\x1b[0m", bold:"\x1b[1m", dim:"\x1b[2m", green:"\x1b[32m",
+      yellow:"\x1b[33m", cyan:"\x1b[36m", red:"\x1b[31m", magenta:"\x1b[35m", blue:"\x1b[34m" }
   : Object.fromEntries(
-      [
-        "reset",
-        "bold",
-        "dim",
-        "green",
-        "yellow",
-        "cyan",
-        "red",
-        "magenta",
-        "blue",
-      ].map((k) => [k, ""]),
+      ["reset","bold","dim","green","yellow","cyan","red","magenta","blue"].map(k => [k, ""])
     );
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
-const indent = (d) => "  ".repeat(d);
-const log = (d, sym, col, msg) =>
-  console.log(`${indent(d)}${col}${sym} ${msg}${C.reset}`);
-const info = (d, m) => log(d, "›", C.cyan, m);
-const success = (d, m) => log(d, "✔", C.green, m);
-const warn = (d, m) => log(d, "⚠", C.yellow, m);
-const error = (d, m) => log(d, "✘", C.red, m);
-const header = (d, m) => log(d, "▸", C.bold + C.magenta, m);
-const pushed = (d, m) => log(d, "↑", C.bold + C.green, m);
-const verbose = (d, m) => {
-  if (options.verbose) log(d, " ", C.dim, m);
-};
+const indent  = (d) => "  ".repeat(d);
+const log     = (d, sym, col, msg) => console.log(`${indent(d)}${col}${sym} ${msg}${C.reset}`);
+const info    = (d, m) => log(d, "›", C.cyan,             m);
+const success = (d, m) => log(d, "✔", C.green,            m);
+const warn    = (d, m) => log(d, "⚠", C.yellow,           m);
+const error   = (d, m) => log(d, "✘", C.red,              m);
+const header  = (d, m) => log(d, "▸", C.bold + C.magenta, m);
+const pushLog = (d, m) => log(d, "↑", C.bold + C.green,   m);
+const verbose = (d, m) => { if (options.verbose) log(d, " ", C.dim, m); };
 
 // ─── Git helpers ─────────────────────────────────────────────────────────────
 
@@ -109,7 +89,7 @@ function git(cwd, ...gitArgs) {
   return {
     stdout: (r.stdout || "").trim(),
     stderr: (r.stderr || "").trim(),
-    ok: r.status === 0,
+    ok:     r.status === 0,
   };
 }
 
@@ -138,12 +118,12 @@ function parseGitmodules(repoDir) {
 
     const kv = line.match(/^(\w+)\s*=\s*(.+)$/);
     if (kv) {
-      if (kv[1] === "path") cur.path = kv[2];
-      if (kv[1] === "url") cur.url = kv[2];
+      if (kv[1] === "path")   cur.path   = kv[2];
+      if (kv[1] === "url")    cur.url    = kv[2];
       if (kv[1] === "branch") cur.branch = kv[2];
     }
   }
-  return submodules.filter((s) => s.path);
+  return submodules.filter(s => s.path);
 }
 
 function resolveBranch(dir, declared) {
@@ -156,7 +136,6 @@ function resolveBranch(dir, declared) {
   return options.defaultBranch;
 }
 
-/** True when the index has staged changes */
 function hasStagedChanges(dir) {
   return !git(dir, "diff", "--cached", "--quiet").ok;
 }
@@ -164,33 +143,17 @@ function hasStagedChanges(dir) {
 // ─── Statistics ───────────────────────────────────────────────────────────────
 
 const stats = {
-  updated: 0,
-  upToDate: 0,
-  skipped: 0,
-  failed: 0,
-  committed: 0,
-  pushed: 0,
-  total: 0,
+  updated: 0, upToDate: 0, skipped: 0, failed: 0,
+  committed: 0, pushed: 0, total: 0,
 };
 
 // ─── Phase 1 — pull every submodule to the remote tip ────────────────────────
 
-/**
- * Fetch + reset every submodule inside repoDir to origin/<branch>.
- * Stages the updated .gitmodules pointer in the immediate parent.
- * Returns true when at least one pointer changed (so caller can re-stage).
- */
 function pullSubmodules(repoDir, depth = 0) {
-  if (depth > options.maxDepth) {
-    warn(depth, `Max depth reached.`);
-    return false;
-  }
+  if (depth > options.maxDepth) { warn(depth, "Max depth reached."); return false; }
 
   const submodules = parseGitmodules(repoDir);
-  if (!submodules.length) {
-    verbose(depth, "No submodules.");
-    return false;
-  }
+  if (!submodules.length) { verbose(depth, "No submodules."); return false; }
 
   let anyChanged = false;
 
@@ -204,14 +167,7 @@ function pullSubmodules(repoDir, depth = 0) {
     if (!fs.existsSync(subDir) || !isGitRepo(subDir)) {
       info(depth + 1, "Not initialised — running git submodule update --init");
       if (!options.dryRun) {
-        const init = git(
-          repoDir,
-          "submodule",
-          "update",
-          "--init",
-          "--",
-          sub.path,
-        );
+        const init = git(repoDir, "submodule", "update", "--init", "--", sub.path);
         if (!init.ok) {
           error(depth + 1, `Init failed: ${init.stderr}`);
           stats.failed++;
@@ -235,7 +191,7 @@ function pullSubmodules(repoDir, depth = 0) {
     }
 
     // Resolve branch + remote tip
-    const branch = resolveBranch(subDir, sub.branch);
+    const branch    = resolveBranch(subDir, sub.branch);
     const remoteRef = `origin/${branch}`;
     const remoteTip = git(subDir, "rev-parse", remoteRef).stdout;
 
@@ -249,16 +205,14 @@ function pullSubmodules(repoDir, depth = 0) {
 
     const beforeHash = git(subDir, "rev-parse", "HEAD").stdout;
 
-    // Dry-run
+    // Dry-run path
     if (options.dryRun) {
       if (beforeHash === remoteTip) {
         success(depth + 1, `Up to date (${remoteTip.slice(0, 8)})`);
         stats.upToDate++;
       } else {
-        success(
-          depth + 1,
-          `Would update  ${C.dim}${beforeHash.slice(0, 8)}${C.reset} → ${C.bold}${C.green}${remoteTip.slice(0, 8)}${C.reset}  (dry-run)`,
-        );
+        success(depth + 1,
+          `Would update  ${C.dim}${beforeHash.slice(0, 8)}${C.reset} → ${C.bold}${C.green}${remoteTip.slice(0, 8)}${C.reset}  (dry-run)`);
         stats.updated++;
         anyChanged = true;
       }
@@ -266,7 +220,7 @@ function pullSubmodules(repoDir, depth = 0) {
       continue;
     }
 
-    // Checkout -B <branch> <remoteRef>  →  moves branch pointer to remote tip
+    // Checkout -B <branch> <remoteRef> — moves branch pointer to remote tip
     const co = git(subDir, "checkout", "-B", branch, remoteRef);
     if (!co.ok) {
       const co2 = git(subDir, "checkout", branch);
@@ -295,15 +249,13 @@ function pullSubmodules(repoDir, depth = 0) {
       success(depth + 1, `Already up to date (${afterHash.slice(0, 8)})`);
       stats.upToDate++;
     } else {
-      success(
-        depth + 1,
-        `Updated  ${C.dim}${beforeHash.slice(0, 8)}${C.reset} → ${C.bold}${C.green}${afterHash.slice(0, 8)}${C.reset}`,
-      );
+      success(depth + 1,
+        `Updated  ${C.dim}${beforeHash.slice(0, 8)}${C.reset} → ${C.bold}${C.green}${afterHash.slice(0, 8)}${C.reset}`);
       stats.updated++;
       anyChanged = true;
     }
 
-    // Recurse — if a nested pointer changed, re-stage this submodule in its parent
+    // Recurse — if a nested pointer changed, re-stage this submodule in parent
     if (pullSubmodules(subDir, depth + 1)) {
       git(repoDir, "add", sub.path);
       anyChanged = true;
@@ -315,12 +267,8 @@ function pullSubmodules(repoDir, depth = 0) {
 
 // ─── Phase 2 — commit + push updated refs, innermost repos first ─────────────
 
-/**
- * Depth-first traversal: commit + push innermost repos before outer ones,
- * so that by the time the root repo is pushed, all nested pointers are live.
- */
 function commitAndPush(repoDir, label, depth = 0) {
-  // Recurse into children first
+  // Children first so innermost repos are pushed before outer ones
   for (const sub of parseGitmodules(repoDir)) {
     const subDir = path.resolve(repoDir, sub.path);
     if (fs.existsSync(subDir) && isGitRepo(subDir)) {
@@ -334,10 +282,7 @@ function commitAndPush(repoDir, label, depth = 0) {
   }
 
   const branch = resolveBranch(repoDir, null);
-  info(
-    depth,
-    `${C.bold}${label}${C.reset} — committing updated refs on ${C.bold}${branch}${C.reset}…`,
-  );
+  info(depth, `${C.bold}${label}${C.reset} — committing on ${C.bold}${branch}${C.reset}…`);
 
   if (options.dryRun) {
     warn(depth, `Would commit + push '${label}' → origin/${branch}  (dry-run)`);
@@ -366,7 +311,7 @@ function commitAndPush(repoDir, label, depth = 0) {
     stats.failed++;
     return;
   }
-  pushed(depth, `${C.bold}${label}${C.reset} → origin/${branch}`);
+  pushLog(depth, `${C.bold}${label}${C.reset} → origin/${branch}`);
   stats.pushed++;
 }
 
@@ -374,15 +319,9 @@ function commitAndPush(repoDir, label, depth = 0) {
 
 function main() {
   console.log();
-  console.log(
-    `${C.bold}${C.blue}╔══════════════════════════════════════════╗${C.reset}`,
-  );
-  console.log(
-    `${C.bold}${C.blue}║   Git Submodule Recursive Updater        ║${C.reset}`,
-  );
-  console.log(
-    `${C.bold}${C.blue}╚══════════════════════════════════════════╝${C.reset}`,
-  );
+  console.log(`${C.bold}${C.blue}╔══════════════════════════════════════════╗${C.reset}`);
+  console.log(`${C.bold}${C.blue}║   github-update-submodule                ║${C.reset}`);
+  console.log(`${C.bold}${C.blue}╚══════════════════════════════════════════╝${C.reset}`);
   console.log();
 
   if (!isGitRepo(options.repoPath)) {
@@ -392,46 +331,33 @@ function main() {
 
   info(0, `Repository     : ${C.bold}${options.repoPath}${C.reset}`);
   info(0, `Default branch : ${C.bold}${options.defaultBranch}${C.reset}`);
-  info(
-    0,
-    `Push mode      : ${options.push ? C.bold + C.green + "ON" : C.dim + "OFF"}${C.reset}`,
-  );
-  if (options.dryRun) warn(0, "DRY RUN — no changes will be made");
-  if (options.maxDepth !== Infinity)
-    info(0, `Max depth      : ${options.maxDepth}`);
+  info(0, `Push mode      : ${options.push ? C.bold + C.green + "ON" : C.dim + "OFF"}${C.reset}`);
+  if (options.dryRun)                warn(0, "DRY RUN — no changes will be made");
+  if (options.maxDepth !== Infinity) info(0, `Max depth      : ${options.maxDepth}`);
   console.log();
 
   const t0 = Date.now();
 
-  // ── Phase 1 ───────────────────────────────────────────────────────────────
-  console.log(
-    `${C.bold}${C.cyan}Phase 1 — Pull submodules to latest remote commit${C.reset}`,
-  );
+  // Phase 1 — pull
+  console.log(`${C.bold}${C.cyan}Phase 1 — Pull all submodules to latest remote commit${C.reset}`);
   console.log();
   pullSubmodules(options.repoPath, 0);
 
-  // ── Phase 2 ───────────────────────────────────────────────────────────────
+  // Phase 2 — commit + push
   if (options.push) {
     console.log();
-    console.log(
-      `${C.bold}${C.cyan}Phase 2 — Commit & push updated refs (innermost → root)${C.reset}`,
-    );
+    console.log(`${C.bold}${C.cyan}Phase 2 — Commit & push updated refs (innermost → root)${C.reset}`);
     console.log();
     commitAndPush(options.repoPath, path.basename(options.repoPath), 0);
   } else {
     console.log();
-    warn(
-      0,
-      `Refs staged locally but NOT pushed. Re-run with ${C.bold}--push${C.reset}${C.yellow} to commit & push.`,
-    );
+    warn(0, `Refs staged locally but NOT pushed (--no-push mode).`);
   }
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
 
   console.log();
-  console.log(
-    `${C.bold}${C.blue}─────────────────────────────────────────${C.reset}`,
-  );
+  console.log(`${C.bold}${C.blue}─────────────────────────────────────────${C.reset}`);
   console.log(`${C.bold}Summary${C.reset}`);
   console.log(`  ${C.green}✔ Updated    : ${stats.updated}${C.reset}`);
   console.log(`  ${C.cyan}· Up to date : ${stats.upToDate}${C.reset}`);
@@ -441,9 +367,7 @@ function main() {
   }
   console.log(`  ${C.yellow}⚠ Skipped    : ${stats.skipped}${C.reset}`);
   console.log(`  ${C.red}✘ Failed     : ${stats.failed}${C.reset}`);
-  console.log(
-    `  ${C.dim}  Total      : ${stats.total}  (${elapsed}s)${C.reset}`,
-  );
+  console.log(`  ${C.dim}  Total      : ${stats.total}  (${elapsed}s)${C.reset}`);
   console.log();
 
   if (stats.failed > 0) process.exit(1);

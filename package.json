@@ -1,0 +1,25 @@
+{
+  "name": "github-update-submodule",
+  "version": "1.0.0",
+  "description": "Recursively pull all Git submodules to their latest remote commit and push updated refs up every parent repo — so GitHub always points to the latest.",
+  "main": "bin/github-update-submodule.js",
+  "bin": {
+    "github-update-submodule": "bin/github-update-submodule.js"
+  },
+  "scripts": {
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "git",
+    "submodule",
+    "github",
+    "recursive",
+    "update",
+    "cli"
+  ],
+  "author": "SENODROOM",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
