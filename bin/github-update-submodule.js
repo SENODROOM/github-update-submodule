@@ -25,11 +25,13 @@
  *   --no-color           Disable colored output
  *   --no-progress        Disable the progress bar
  *   --make-config        Generate a submodule.config.json in the current repo and exit
+ *   --version  / -v     Print version and exit
+ *   --help     / -h     Print this help and exit
  */
 
 const { spawnSync, spawn } = require("child_process");
-const path = require("path");
-const fs = require("fs");
+const path    = require("path");
+const fs      = require("fs");
 const readline = require("readline");
 
 // ─── Config file loader ───────────────────────────────────────────────────────
@@ -61,18 +63,20 @@ const cliArgs = process.argv.slice(2);
 
 // Defaults (lowest priority)
 const options = {
-  repoPath: process.cwd(),
-  push: true,
-  interactive: false,
-  ignore: [],          // array of submodule names to skip
-  parallel: false,
+  repoPath:      process.cwd(),
+  push:          true,
+  interactive:   false,
+  ignore:        [],          // array of submodule names to skip
+  parallel:      false,
   commitMessage: "chore: update submodule refs",
-  dryRun: false,
+  dryRun:        false,
   defaultBranch: "main",
-  maxDepth: Infinity,
-  verbose: false,
-  color: true,
-  progress: true,
+  maxDepth:      Infinity,
+  verbose:       false,
+  color:         true,
+  progress:      true,
+  showVersion:   false,
+  showHelp:      false,
 };
 
 // Collect positional repo path first so config is loaded from correct dir
@@ -82,71 +86,71 @@ for (let i = 0; i < cliArgs.length; i++) {
 
 // Merge config file (overrides defaults, CLI will override config)
 const cfg = loadConfig(options.repoPath);
-if (cfg.push !== undefined) options.push = cfg.push;
-if (cfg.interactive !== undefined) options.interactive = cfg.interactive;
-if (cfg.ignore !== undefined) options.ignore = [].concat(cfg.ignore);
-if (cfg.parallel !== undefined) options.parallel = cfg.parallel;
+if (cfg.push          !== undefined) options.push          = cfg.push;
+if (cfg.interactive   !== undefined) options.interactive   = cfg.interactive;
+if (cfg.ignore        !== undefined) options.ignore        = [].concat(cfg.ignore);
+if (cfg.parallel      !== undefined) options.parallel      = cfg.parallel;
 if (cfg.commitMessage !== undefined) options.commitMessage = cfg.commitMessage;
 if (cfg.defaultBranch !== undefined) options.defaultBranch = cfg.defaultBranch;
-if (cfg.maxDepth !== undefined) options.maxDepth = cfg.maxDepth;
-if (cfg.verbose !== undefined) options.verbose = cfg.verbose;
-if (cfg.color !== undefined) options.color = cfg.color;
-if (cfg.progress !== undefined) options.progress = cfg.progress;
+if (cfg.maxDepth      !== undefined) options.maxDepth      = cfg.maxDepth;
+if (cfg.verbose       !== undefined) options.verbose       = cfg.verbose;
+if (cfg.color         !== undefined) options.color         = cfg.color;
+if (cfg.progress      !== undefined) options.progress      = cfg.progress;
 
 // CLI flags (highest priority)
 for (let i = 0; i < cliArgs.length; i++) {
   const a = cliArgs[i];
-  if (a === "--no-push") options.push = false;
-  else if (a === "--interactive") options.interactive = true;
-  else if (a === "--parallel") options.parallel = true;
-  else if (a === "--dry-run") options.dryRun = true;
-  else if (a === "--verbose") options.verbose = true;
-  else if (a === "--no-color") options.color = false;
-  else if (a === "--no-progress") options.progress = false;
-  else if (a === "--make-config") options.makeConfig = true;
-  else if (a === "--branch") options.defaultBranch = cliArgs[++i];
-  else if (a === "--message") options.commitMessage = cliArgs[++i];
-  else if (a === "--depth") options.maxDepth = parseInt(cliArgs[++i], 10);
-  else if (a === "--ignore") options.ignore.push(cliArgs[++i]);
+  if      (a === "--no-push")      options.push          = false;
+  else if (a === "--interactive")  options.interactive   = true;
+  else if (a === "--parallel")     options.parallel      = true;
+  else if (a === "--dry-run")      options.dryRun        = true;
+  else if (a === "--verbose")      options.verbose       = true;
+  else if (a === "--no-color")     options.color         = false;
+  else if (a === "--no-progress")  options.progress      = false;
+  else if (a === "--make-config")  options.makeConfig    = true;
+  else if (a === "--branch")       options.defaultBranch = cliArgs[++i];
+  else if (a === "--message")      options.commitMessage = cliArgs[++i];
+  else if (a === "--depth")        options.maxDepth      = parseInt(cliArgs[++i], 10);
+  else if (a === "--ignore")       options.ignore.push(cliArgs[++i]);
+  else if (a === "--version" || a === "-v") options.showVersion = true;
+  else if (a === "--help"    || a === "-h") options.showHelp    = true;
 }
 
 // ─── Colour helpers ──────────────────────────────────────────────────────────
 
 const C = options.color
-  ? {
-    reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m", green: "\x1b[32m",
-    yellow: "\x1b[33m", cyan: "\x1b[36m", red: "\x1b[31m", magenta: "\x1b[35m",
-    blue: "\x1b[34m", white: "\x1b[37m"
-  }
+  ? { reset:"\x1b[0m", bold:"\x1b[1m", dim:"\x1b[2m", green:"\x1b[32m",
+      yellow:"\x1b[33m", cyan:"\x1b[36m", red:"\x1b[31m", magenta:"\x1b[35m",
+      blue:"\x1b[34m",   white:"\x1b[37m" }
   : Object.fromEntries(
-    ["reset", "bold", "dim", "green", "yellow", "cyan", "red", "magenta", "blue", "white"].map(k => [k, ""])
-  );
+      ["reset","bold","dim","green","yellow","cyan","red","magenta","blue","white"].map(k=>[k,""])
+    );
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
-const indent = (d) => "  ".repeat(d);
-const log = (d, sym, col, msg) => console.log(`${indent(d)}${col}${sym} ${msg}${C.reset}`);
-const info = (d, m) => log(d, "›", C.cyan, m);
-const success = (d, m) => log(d, "✔", C.green, m);
-const warn = (d, m) => log(d, "⚠", C.yellow, m);
-const error = (d, m) => log(d, "✘", C.red, m);
-const header = (d, m) => log(d, "▸", C.bold + C.magenta, m);
-const pushLog = (d, m) => log(d, "↑", C.bold + C.green, m);
-const linkLog = (d, m) => log(d, "⎘", C.bold + C.blue, m);
+const indent  = (d) => "  ".repeat(d);
+const log     = (d, sym, col, msg) => console.log(`${indent(d)}${col}${sym} ${msg}${C.reset}`);
+const info    = (d, m) => log(d, "›", C.cyan,             m);
+const success = (d, m) => log(d, "✔", C.green,            m);
+const warn    = (d, m) => log(d, "⚠", C.yellow,           m);
+const error   = (d, m) => log(d, "✘", C.red,              m);
+const header  = (d, m) => log(d, "▸", C.bold + C.magenta, m);
+const pushLog = (d, m) => log(d, "↑", C.bold + C.green,   m);
+const linkLog = (d, m) => log(d, "⎘", C.bold + C.blue,    m);
 const verbose = (d, m) => { if (options.verbose) log(d, " ", C.dim, m); };
 
 // ─── Progress bar ─────────────────────────────────────────────────────────────
 
 const progress = {
-  total: 0,
+  total:   0,
   current: 0,
-  active: false,
+  active:  false,
 
   init(total) {
     if (!options.progress || !process.stdout.isTTY) return;
-    this.total = total;
+    this.total   = total;
     this.current = 0;
-    this.active = true;
+    this.active  = true;
     this._render();
   },
 
@@ -164,13 +168,13 @@ const progress = {
   },
 
   _render(label = "") {
-    const W = 28;
-    const filled = Math.round((this.current / this.total) * W);
-    const empty = W - filled;
-    const bar = C.green + "█".repeat(filled) + C.dim + "░".repeat(empty) + C.reset;
-    const pct = String(Math.round((this.current / this.total) * 100)).padStart(3);
+    const W       = 28;
+    const filled  = Math.round((this.current / this.total) * W);
+    const empty   = W - filled;
+    const bar     = C.green + "█".repeat(filled) + C.dim + "░".repeat(empty) + C.reset;
+    const pct     = String(Math.round((this.current / this.total) * 100)).padStart(3);
     const counter = `${this.current}/${this.total}`;
-    const lbl = label ? `  ${C.dim}${label.slice(0, 24)}${C.reset}` : "";
+    const lbl     = label ? `  ${C.dim}${label.slice(0, 24)}${C.reset}` : "";
     process.stdout.write(`\r${C.bold}[${bar}${C.bold}] ${pct}% (${counter})${lbl}\x1b[K`);
   },
 };
@@ -211,7 +215,7 @@ function git(cwd, ...gitArgs) {
   return {
     stdout: (r.stdout || "").trim(),
     stderr: (r.stderr || "").trim(),
-    ok: r.status === 0,
+    ok:     r.status === 0,
   };
 }
 
@@ -258,8 +262,8 @@ function parseGitmodules(repoDir) {
 
     const kv = line.match(/^(\w+)\s*=\s*(.+)$/);
     if (kv) {
-      if (kv[1] === "path") cur.path = kv[2];
-      if (kv[1] === "url") cur.url = kv[2];
+      if (kv[1] === "path")   cur.path   = kv[2];
+      if (kv[1] === "url")    cur.url    = kv[2];
       if (kv[1] === "branch") cur.branch = kv[2];
     }
   }
@@ -399,7 +403,7 @@ function pullSubmodules(repoDir, depth = 0) {
     }
 
     // ── Resolve branch + remote tip ───────────────────────────────────────
-    const branch = resolveBranch(subDir, sub.branch);
+    const branch    = resolveBranch(subDir, sub.branch);
     const remoteRef = `origin/${branch}`;
     const remoteTip = git(subDir, "rev-parse", remoteRef).stdout;
 
@@ -412,7 +416,7 @@ function pullSubmodules(repoDir, depth = 0) {
     }
 
     const beforeHash = git(subDir, "rev-parse", "HEAD").stdout;
-    const remoteUrl = getRemoteUrl(subDir);
+    const remoteUrl  = getRemoteUrl(subDir);
 
     // ── Dry-run ───────────────────────────────────────────────────────────
     if (options.dryRun) {
@@ -557,14 +561,14 @@ async function runMakeConfig() {
   const exists = fs.existsSync(dest);
 
   const template = {
-    defaultBranch: "main",
-    parallel: false,
-    ignore: [],
-    commitMessage: "chore: update submodule refs",
-    interactive: false,
-    verbose: false,
-    color: true,
-    progress: true
+    defaultBranch:  "main",
+    parallel:       false,
+    ignore:         [],
+    commitMessage:  "chore: update submodule refs",
+    interactive:    false,
+    verbose:        false,
+    color:          true,
+    progress:       true
   };
 
   console.log();
@@ -606,9 +610,83 @@ async function runMakeConfig() {
   process.exit(0);
 }
 
+// ─── Version & help ──────────────────────────────────────────────────────────
+
+const VERSION = "2.0.0";
+
+function printVersion() {
+  console.log(`github-update-submodule ${VERSION}`);
+  process.exit(0);
+}
+
+function printHelp() {
+  const b  = C.bold;
+  const r  = C.reset;
+  const cy = C.cyan;
+  const ye = C.yellow;
+  const di = C.dim;
+  const gr = C.green;
+
+  console.log();
+  console.log(`${b}${C.blue}╔══════════════════════════════════════════╗${r}`);
+  console.log(`${b}${C.blue}║   github-update-submodule  v${VERSION}        ║${r}`);
+  console.log(`${b}${C.blue}╚══════════════════════════════════════════╝${r}`);
+  console.log();
+  console.log(`${b}USAGE${r}`);
+  console.log(`  github-update-submodule ${cy}[repo-path]${r} ${ye}[options]${r}`);
+  console.log();
+  console.log(`${b}DESCRIPTION${r}`);
+  console.log(`  Recursively pulls every Git submodule to the latest remote commit,`);
+  console.log(`  then commits and pushes the updated refs up every parent repo so`);
+  console.log(`  GitHub always points to the latest commit at every nesting level.`);
+  console.log();
+  console.log(`${b}OPTIONS${r}`);
+  const flags = [
+    ["--no-push",              "",       "Pull locally only — skip commit and push"],
+    ["--interactive",          "",       "Prompt yes/no before pushing each parent repo"],
+    ["--ignore",               "<name>", "Skip a submodule by name (repeatable)"],
+    ["--parallel",             "",       "Fetch all submodules concurrently (faster)"],
+    ["--dry-run",              "",       "Preview changes without modifying anything"],
+    ["--message",              "<msg>",  `Commit message ${di}(default: "chore: update submodule refs")${r}`],
+    ["--branch",               "<b>",   `Default branch if not in .gitmodules ${di}(default: main)${r}`],
+    ["--depth",                "<n>",   "Limit recursion depth"],
+    ["--verbose",              "",       "Show full git output"],
+    ["--no-color",             "",       "Disable colored output"],
+    ["--no-progress",          "",       "Disable the progress bar"],
+    ["--make-config",          "",       "Generate submodule.config.json with all defaults"],
+    ["--version, -v",          "",       "Print version and exit"],
+    ["--help,    -h",          "",       "Print this help and exit"],
+  ];
+  for (const [flag, arg, desc] of flags) {
+    const left = `  ${cy}${flag}${r}${arg ? " " + ye + arg + r : ""}`;
+    const pad  = " ".repeat(Math.max(1, 36 - flag.length - arg.length));
+    console.log(`${left}${pad}${desc}`);
+  }
+  console.log();
+  console.log(`${b}EXAMPLES${r}`);
+  console.log(`  ${gr}github-update-submodule${r}                          ${di}# pull + commit + push everything${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--dry-run${r}                 ${di}# preview only${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--parallel${r}               ${di}# concurrent fetch${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--interactive${r}            ${di}# confirm before each push${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--ignore frontend${r}        ${di}# skip a submodule${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--no-push${r}                ${di}# local update only${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--make-config${r}            ${di}# create config file${r}`);
+  console.log(`  ${gr}github-update-submodule${r} ${ye}--version${r}                ${di}# print version${r}`);
+  console.log();
+  console.log(`${b}CONFIG FILE${r}`);
+  console.log(`  Run ${cy}--make-config${r} to generate ${cy}submodule.config.json${r} in your repo root.`);
+  console.log(`  CLI flags always override config file values.`);
+  console.log();
+  process.exit(0);
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 async function main() {
+  // early-exit flags
+  if (options.showVersion) { printVersion(); return; }
+  if (options.showHelp)    { printHelp();    return; }
+
   // --make-config: generate a config file and exit immediately
   if (options.makeConfig) {
     await runMakeConfig();
@@ -629,9 +707,9 @@ async function main() {
   // Print active config
   info(0, `Repository     : ${C.bold}${options.repoPath}${C.reset}`);
   info(0, `Default branch : ${C.bold}${options.defaultBranch}${C.reset}`);
-  info(0, `Push mode      : ${options.push ? C.bold + C.green + "ON" : C.dim + "OFF"}${C.reset}`);
-  info(0, `Interactive    : ${options.interactive ? C.bold + C.yellow + "ON" : C.dim + "OFF"}${C.reset}`);
-  info(0, `Parallel fetch : ${options.parallel ? C.bold + C.cyan + "ON" : C.dim + "OFF"}${C.reset}`);
+  info(0, `Push mode      : ${options.push        ? C.bold+C.green+"ON"      : C.dim+"OFF"}${C.reset}`);
+  info(0, `Interactive    : ${options.interactive ? C.bold+C.yellow+"ON"     : C.dim+"OFF"}${C.reset}`);
+  info(0, `Parallel fetch : ${options.parallel    ? C.bold+C.cyan+"ON"      : C.dim+"OFF"}${C.reset}`);
   if (options.ignore.length)
     info(0, `Ignoring       : ${C.bold}${C.yellow}${options.ignore.join(", ")}${C.reset}`);
   if (options.dryRun)
