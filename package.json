@@ -21,5 +21,13 @@
   "license": "MIT",
   "engines": {
     "node": ">=14.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SENODROOM/github-update-submodule.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SENODROOM/github-update-submodule/issues"
+  },
+  "homepage": "https://github.com/SENODROOM/github-update-submodule#readme"
 }
